@@ -1,0 +1,18 @@
+name: Verify Release Version
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  verify-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify manifest.json version matches release
+        run: |
+          RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+          MANIFEST_VERSION=$(jq -r .version custom_components/duke_energy/manifest.json)
+          echo "Release: $RELEASE_VERSION | Manifest: $MANIFEST_VERSION"
+          [ "$RELEASE_VERSION" = "$MANIFEST_VERSION" ] || exit 1
