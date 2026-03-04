@@ -31,7 +31,7 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-_SUPPORTED_METER_TYPES = ("ELECTRIC",)
+_SUPPORTED_METER_TYPES = ("ELECTRIC", "GAS")
 
 type DukeEnergyConfigEntry = ConfigEntry[DukeEnergyCoordinator]
 
@@ -127,7 +127,7 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
                     min(usage.keys()),
                     None,
                     {consumption_statistic_id},
-                    "hour",
+                    "hour" if meter["serviceType"] == "ELECTRIC" else "day",
                     None,
                     {"sum"},
                 )
@@ -159,7 +159,9 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
                 name=f"{name_prefix} Consumption",
                 source=DOMAIN,
                 statistic_id=consumption_statistic_id,
-                unit_class=EnergyConverter.UNIT_CLASS,
+                unit_class=EnergyConverter.UNIT_CLASS
+                if meter["serviceType"] == "ELECTRIC"
+                else "volume",
                 unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR
                 if meter["serviceType"] == "ELECTRIC"
                 else UnitOfVolume.CENTUM_CUBIC_FEET,
@@ -205,16 +207,29 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
         end = dt_util.now(tz).replace(hour=0, minute=0, second=0, microsecond=0) - one
         _LOGGER.debug("Data lookup range: %s - %s", start, end)
 
+        if meter["serviceType"] == "GAS":
+            interval = "DAILY"
+            period = "WEEK"
+        else:
+            interval = "HOURLY"
+            period = "DAY"
+
         start_step = max(end - lookback, start)
         end_step = end
         usage: dict[datetime, dict[str, float | int]] = {}
         while True:
-            _LOGGER.debug("Getting hourly usage: %s - %s", start_step, end_step)
+            _LOGGER.debug(
+                "Getting %s %s usage: %s - %s",
+                meter["serviceType"].lower(),
+                interval.lower(),
+                start_step,
+                end_step,
+            )
             try:
                 # Get data
                 try:
                     results = await self.api.get_energy_usage(
-                        meter["serialNum"], "HOURLY", "DAY", start_step, end_step
+                        meter["serialNum"], interval, period, start_step, end_step
                     )
                 except DukeEnergyAuthError as err:
                     raise ConfigEntryAuthFailed from err
