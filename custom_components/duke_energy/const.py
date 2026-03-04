@@ -2,19 +2,17 @@
 
 DOMAIN = "duke_energy"
 
-# Auth0 OAuth2 configuration for Duke Energy
+# Auth0 OAuth2 configuration for Duke Energy (iOS mobile app credentials)
 OAUTH2_AUTHORIZE = "https://login.duke-energy.com/authorize"
 OAUTH2_TOKEN = "https://login.duke-energy.com/oauth/token"  # noqa: S105
-OAUTH2_CLIENT_ID = "uB67shrSSodJrNKTvZ0cWyAE9VRqkFwI"
+OAUTH2_CLIENT_ID = "PitoKqxMh8thrFF8rRlYGrAs3LbSD2dj"
 
 # Scopes required for Duke Energy API access
 OAUTH2_SCOPES = ["openid", "profile", "email", "offline_access"]
 
-# Auth0 client identifier (base64 encoded client info for mobile app)
-AUTH0_CLIENT = "eyJuYW1lIjoiQXV0aDAuQW5kcm9pZCIsImVudiI6eyJhbmRyb2lkIjoiMzUifSwidmVyc2lvbiI6IjMuOC4wIn0="  # noqa: E501
+# Auth0 client identifier (base64 encoded client info for iOS mobile app)
+# Decoded: Auth0.swift, iOS 26.2, swift 6.x, version 2.13.0
+AUTH0_CLIENT = "eyJuYW1lIjoiQXV0aDAuc3dpZnQiLCJlbnYiOnsiaU9TIjoiMjYuMiIsInN3aWZ0IjoiNi54In0sInZlcnNpb24iOiIyLjEzLjAifQ"  # noqa: E501
 
-# Mobile app redirect URI - required by Duke Energy Auth0 config
-MOBILE_REDIRECT_URI = (
-    "cma-prod://login.duke-energy.com/android/"
-    "com.dukeenergy.customerapp.release/callback"
-)
+# iOS mobile app redirect URI - required by Duke Energy Auth0 config
+MOBILE_REDIRECT_URI = "https://login.duke-energy.com/ios/com.duke-energy.app/callback"
