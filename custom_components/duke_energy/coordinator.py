@@ -31,7 +31,7 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-_SUPPORTED_METER_TYPES = ("ELECTRIC",)
+_SUPPORTED_METER_TYPES = ("ELECTRIC", "GAS")
 
 type DukeEnergyConfigEntry = ConfigEntry[DukeEnergyCoordinator]
 
@@ -110,11 +110,11 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
             )
             if not last_stat:
                 _LOGGER.debug("Updating statistic for the first time")
-                usage = await self._async_get_energy_usage(meter)
+                usage, interval = await self._async_get_energy_usage(meter)
                 consumption_sum = 0.0
                 last_stats_time = None
             else:
-                usage = await self._async_get_energy_usage(
+                usage, interval = await self._async_get_energy_usage(
                     meter,
                     last_stat[consumption_statistic_id][0]["start"],  # pyright: ignore[reportTypedDictNotRequiredAccess]
                 )
@@ -127,7 +127,7 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
                     min(usage.keys()),
                     None,
                     {consumption_statistic_id},
-                    "hour",
+                    "hour" if interval == "HOURLY" else "day",
                     None,
                     {"sum"},
                 )
@@ -144,9 +144,14 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
                     continue
                 consumption_sum += data["energy"]
 
+                # For daily intervals, register usage at noon to better represent
+                # when daily usage occurred rather than at midnight (start of day).
+                stat_start = (
+                    start + timedelta(hours=12) if interval == "DAILY" else start
+                )
                 consumption_statistics.append(
                     StatisticData(
-                        start=start, state=data["energy"], sum=consumption_sum
+                        start=stat_start, state=data["energy"], sum=consumption_sum
                     )
                 )
 
@@ -159,7 +164,9 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
                 name=f"{name_prefix} Consumption",
                 source=DOMAIN,
                 statistic_id=consumption_statistic_id,
-                unit_class=EnergyConverter.UNIT_CLASS,
+                unit_class=EnergyConverter.UNIT_CLASS
+                if meter["serviceType"] == "ELECTRIC"
+                else "volume",
                 unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR
                 if meter["serviceType"] == "ELECTRIC"
                 else UnitOfVolume.CENTUM_CUBIC_FEET,
@@ -176,7 +183,7 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
 
     async def _async_get_energy_usage(
         self, meter: dict[str, Any], start_time: float | None = None
-    ) -> dict[datetime, dict[str, float | int]]:
+    ) -> tuple[dict[datetime, dict[str, float | int]], str]:
         """
         Get energy usage.
 
@@ -185,6 +192,8 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
         corrections in data.
 
         Duke Energy provides hourly data all the way back to ~3 years.
+
+        Returns a tuple of (usage, interval) where interval is "HOURLY" or "DAILY".
         """
         # All of Duke Energy Service Areas are currently in America/New_York timezone
         # May need to re-think this if that ever changes and determine timezone based
@@ -205,16 +214,33 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
         end = dt_util.now(tz).replace(hour=0, minute=0, second=0, microsecond=0) - one
         _LOGGER.debug("Data lookup range: %s - %s", start, end)
 
+        if meter["serviceType"] == "GAS":
+            run_interval = "DAILY"
+            run_period = "WEEK"
+        else:
+            run_interval = "HOURLY"
+            run_period = "DAY"
+
         start_step = max(end - lookback, start)
         end_step = end
         usage: dict[datetime, dict[str, float | int]] = {}
         while True:
-            _LOGGER.debug("Getting hourly usage: %s - %s", start_step, end_step)
+            _LOGGER.debug(
+                "Getting %s %s usage: %s - %s",
+                meter["serviceType"].lower().capitalize(),
+                run_interval.lower(),
+                start_step,
+                end_step,
+            )
             try:
                 # Get data
                 try:
                     results = await self.api.get_energy_usage(
-                        meter["serialNum"], "HOURLY", "DAY", start_step, end_step
+                        meter["serialNum"],
+                        run_interval,
+                        run_period,
+                        start_step,
+                        end_step,
                     )
                 except DukeEnergyAuthError as err:
                     raise ConfigEntryAuthFailed from err
@@ -236,4 +262,4 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
                 break
 
         _LOGGER.debug("Got %s meter usage reads", len(usage))
-        return usage
+        return usage, run_interval
