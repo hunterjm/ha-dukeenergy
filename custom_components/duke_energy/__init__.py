@@ -53,7 +53,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: DukeEnergyConfigEntry) -
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
 
+    entry.async_on_unload(entry.add_update_listener(async_update_options))
+
     return True
+
+
+async def async_update_options(
+    hass: HomeAssistant, entry: DukeEnergyConfigEntry
+) -> None:
+    """
+    Reload the entry when options change.
+
+    Unloading clears the inserted statistics, so the following setup rebuilds
+    consumption and cost history from scratch with the new price settings.
+    """
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_migrate_entry(
