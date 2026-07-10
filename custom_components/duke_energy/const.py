@@ -15,3 +15,19 @@ AUTH0_CLIENT = "eyJuYW1lIjoiQXV0aDAuc3dpZnQiLCJlbnYiOnsiaU9TIjoiMjYuMiIsInN3aWZ0
 
 # Mobile app redirect URI - required by Duke Energy Auth0 config
 MOBILE_REDIRECT_URI = "https://login.duke-energy.com/ios/com.duke-energy.app/callback"
+
+# Options for cost statistics.
+# The Duke Energy API does not expose per-interval cost, so cost is derived
+# from consumption using a user-configured price source. Options are stored
+# per meter under CONF_METERS so meters on different rates can be priced apart.
+CONF_METERS = "meters"
+
+CONF_COST_MODE = "cost_mode"
+COST_MODE_NONE = "none"
+COST_MODE_FIXED = "fixed"
+COST_MODE_ENTITY = "entity"
+COST_MODES = [COST_MODE_NONE, COST_MODE_FIXED, COST_MODE_ENTITY]
+
+CONF_FIXED_PRICE = "fixed_price"
+CONF_PRICE_ENTITY = "price_entity"
+CONF_MONTHLY_CHARGE = "monthly_charge"

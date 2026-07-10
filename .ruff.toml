@@ -15,6 +15,10 @@ ignore = [
     "ISC001", # incompatible with formatter
 ]
 
+[lint.per-file-ignores]
+# Tests use asserts, magic values, private helpers, and naive datetimes by design.
+"tests/**" = ["ANN", "D", "DTZ", "S101", "SLF001", "PLR2004"]
+
 [lint.flake8-pytest-style]
 fixture-parentheses = false
 

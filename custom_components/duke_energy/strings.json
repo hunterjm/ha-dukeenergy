@@ -28,5 +28,48 @@
     "create_entry": {
       "default": "[%key:common::config_flow::create_entry::authenticated%]"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Select a meter",
+        "description": "Choose which meter's cost tracking to configure. Each meter can use its own price.",
+        "data": {
+          "meter": "Meter"
+        }
+      },
+      "meter": {
+        "title": "Energy cost tracking",
+        "description": "Publish a cost statistic alongside consumption for {meter}. Duke Energy does not expose billed cost, so cost is estimated from usage and a price you provide.",
+        "data": {
+          "cost_mode": "Price source",
+          "fixed_price": "Fixed price",
+          "price_entity": "Price entity",
+          "monthly_charge": "Fixed monthly charge"
+        },
+        "data_description": {
+          "cost_mode": "Where the price per {unit} comes from.",
+          "fixed_price": "A single all-in price per {unit}.",
+          "price_entity": "An entity whose state is the current price per {unit} (e.g. an input number, or a template sensor for time-of-use rates).",
+          "monthly_charge": "Optional flat monthly service charge in $, spread evenly across the hours of each month."
+        }
+      }
+    },
+    "abort": {
+      "no_meters": "No supported meters were found to configure."
+    },
+    "error": {
+      "fixed_price_required": "Enter a price per kWh to use fixed pricing.",
+      "price_entity_required": "Select an entity that provides the price per kWh."
+    }
+  },
+  "selector": {
+    "cost_mode": {
+      "options": {
+        "none": "Disabled",
+        "fixed": "Fixed price",
+        "entity": "Track a price entity"
+      }
+    }
   }
 }
