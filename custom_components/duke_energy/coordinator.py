@@ -3,7 +3,7 @@
 import calendar
 import logging
 from bisect import bisect_right
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from typing import Any, cast
 
@@ -38,6 +38,7 @@ from homeassistant.util.unit_conversion import EnergyConverter
 from .const import (
     CONF_COST_MODE,
     CONF_FIXED_PRICE,
+    CONF_METERS,
     CONF_MONTHLY_CHARGE,
     CONF_PRICE_ENTITY,
     COST_MODE_ENTITY,
@@ -76,6 +77,8 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
         )
         self.api = api
         self._statistic_ids: set = set()
+        # Supported meters discovered on the last refresh, for the options flow.
+        self.meters: dict[str, dict[str, Any]] = {}
 
         @callback
         def _dummy_listener() -> None:
@@ -99,6 +102,7 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
         except DukeEnergyAuthError as err:
             raise ConfigEntryAuthFailed from err
 
+        self.meters = {}
         for serial_number, meter in meters.items():
             if (
                 not isinstance(meter["serviceType"], str)
@@ -109,6 +113,7 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
                 )
                 continue
 
+            self.meters[serial_number] = meter
             await self._async_insert_meter_statistics(serial_number, meter)
 
     async def _async_insert_meter_statistics(
@@ -118,44 +123,49 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
         id_prefix = f"{meter['serviceType'].lower()}_{serial_number}"
         consumption_statistic_id = f"{DOMAIN}:{id_prefix}_energy_consumption"
         cost_statistic_id = f"{DOMAIN}:{id_prefix}_energy_cost"
+        meter_options = self._meter_options(serial_number)
         cost_enabled = (
-            self.config_entry.options.get(CONF_COST_MODE, COST_MODE_NONE)
-            != COST_MODE_NONE
+            meter_options.get(CONF_COST_MODE, COST_MODE_NONE) != COST_MODE_NONE
         )
         self._statistic_ids.add(consumption_statistic_id)
         if cost_enabled:
             self._statistic_ids.add(cost_statistic_id)
-        _LOGGER.debug(
-            "Updating Statistics for %s",
-            consumption_statistic_id,
-        )
+        _LOGGER.debug("Updating Statistics for %s", consumption_statistic_id)
 
         statistic_ids = {consumption_statistic_id}
         if cost_enabled:
             statistic_ids.add(cost_statistic_id)
 
-        last_stat = await get_instance(self.hass).async_add_executor_job(
-            get_last_statistics,
-            self.hass,
-            1,
-            consumption_statistic_id,
-            True,  # noqa: FBT003
-            set(),
+        # Start time of each statistic's newest row; None means it has no
+        # history yet and must be backfilled from scratch.
+        consumption_resume = await self._async_last_stat_start(consumption_statistic_id)
+        cost_resume = (
+            await self._async_last_stat_start(cost_statistic_id)
+            if cost_enabled
+            else None
         )
+
+        # Fetch usage from the earliest resume point so a cost statistic that
+        # lagged behind consumption (e.g. the price entity was unavailable) has
+        # those hours re-fetched and can catch up instead of stalling forever.
+        resume_points = [consumption_resume]
+        if cost_enabled:
+            resume_points.append(cost_resume)
+        window_from = (
+            None
+            if None in resume_points
+            else min(point for point in resume_points if point is not None)
+        )
+
+        usage = await self._async_get_energy_usage(meter, window_from)
+        if window_from is not None and not usage:
+            _LOGGER.debug("No recent usage data. Skipping update")
+            return
+
         # Each baseline is the (sum, start time) to resume statistics from.
+        consumption_baseline: tuple[float, float | None] = (0.0, None)
         cost_baseline: tuple[float, float | None] = (0.0, None)
-        if not last_stat:
-            _LOGGER.debug("Updating statistic for the first time")
-            usage = await self._async_get_energy_usage(meter)
-            consumption_baseline: tuple[float, float | None] = (0.0, None)
-        else:
-            usage = await self._async_get_energy_usage(
-                meter,
-                last_stat[consumption_statistic_id][0]["start"],  # pyright: ignore[reportTypedDictNotRequiredAccess]
-            )
-            if not usage:
-                _LOGGER.debug("No recent usage data. Skipping update")
-                return
+        if window_from is not None:
             stats = await get_instance(self.hass).async_add_executor_job(
                 statistics_during_period,
                 self.hass,
@@ -166,26 +176,20 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
                 None,
                 {"sum"},
             )
-            consumption_baseline = (
-                cast(
-                    "float",
-                    stats[consumption_statistic_id][0]["sum"],  # pyright: ignore[reportTypedDictNotRequiredAccess]
-                ),
-                stats[consumption_statistic_id][0]["start"],  # pyright: ignore[reportTypedDictNotRequiredAccess]
+            consumption_baseline = self._resume_baseline(
+                stats.get(consumption_statistic_id)
             )
             if cost_enabled:
-                cost_baseline = await self._async_get_cost_baseline(
-                    cost_statistic_id, stats.get(cost_statistic_id)
-                )
+                cost_baseline = self._resume_baseline(stats.get(cost_statistic_id))
 
         price_at: Callable[[datetime], float | None] | None = None
         if cost_enabled and usage:
             price_at = await self._async_build_price_lookup(
-                min(usage.keys()), max(usage.keys())
+                meter_options, min(usage.keys()), max(usage.keys())
             )
 
         consumption_statistics, cost_statistics = self._build_statistic_rows(
-            usage, consumption_baseline, cost_baseline, price_at
+            usage, consumption_baseline, cost_baseline, price_at, meter_options
         )
 
         name_prefix = f"Duke Energy {meter['serviceType'].capitalize()} {serial_number}"
@@ -233,6 +237,7 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
         consumption_baseline: tuple[float, float | None],
         cost_baseline: tuple[float, float | None],
         price_at: Callable[[datetime], float | None] | None,
+        meter_options: Mapping[str, Any],
     ) -> tuple[list[StatisticData], list[StatisticData]]:
         """
         Build consumption and cost statistic rows from usage data.
@@ -274,7 +279,9 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
                     "No price available for %s; deferring cost statistics", start
                 )
                 continue
-            cost_state = energy * price + self._hourly_fixed_charge(start)
+            cost_state = energy * price + self._hourly_fixed_charge(
+                meter_options, start
+            )
             cost_sum += cost_state
             cost_statistics.append(
                 StatisticData(start=start, state=cost_state, sum=cost_sum)
@@ -282,41 +289,49 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
 
         return consumption_statistics, cost_statistics
 
-    async def _async_get_cost_baseline(
-        self, cost_statistic_id: str, stats_in_window: list[Any] | None
-    ) -> tuple[float, float | None]:
-        """
-        Get the sum and start time to resume cost statistics from.
-
-        Prefer the oldest cost statistic within the current usage window so the
-        30-day lookback can rewrite recent hours with corrected data, mirroring
-        the consumption logic. If cost statistics exist only before the window
-        (e.g. the price entity was unavailable for a while), resume from the
-        newest one. If none exist at all, start from zero and backfill whatever
-        usage the window covers.
-        """
-        if stats_in_window:
-            return (
-                cast("float", stats_in_window[0]["sum"]),
-                stats_in_window[0]["start"],
-            )
-        last_cost_stat = await get_instance(self.hass).async_add_executor_job(
+    async def _async_last_stat_start(self, statistic_id: str) -> float | None:
+        """Return the start time of a statistic's newest row, or None if empty."""
+        last_stat = await get_instance(self.hass).async_add_executor_job(
             get_last_statistics,
             self.hass,
             1,
-            cost_statistic_id,
+            statistic_id,
             True,  # noqa: FBT003
-            {"sum"},
+            set(),
         )
-        if last_cost_stat:
-            return (
-                cast("float", last_cost_stat[cost_statistic_id][0]["sum"]),
-                last_cost_stat[cost_statistic_id][0]["start"],  # pyright: ignore[reportTypedDictNotRequiredAccess]
-            )
+        if last_stat:
+            return last_stat[statistic_id][0]["start"]  # pyright: ignore[reportTypedDictNotRequiredAccess]
+        return None
+
+    @staticmethod
+    def _resume_baseline(rows: list[Any] | None) -> tuple[float, float | None]:
+        """
+        Return the (sum, start) to resume from: the oldest row in the window.
+
+        Resuming from the window start lets the 30-day usage lookback rewrite
+        recently corrected hours while keeping the running sum contiguous.
+        """
+        if rows:
+            return cast("float", rows[0]["sum"]), rows[0]["start"]
         return 0.0, None
 
+    def _meter_options(self, serial_number: str) -> Mapping[str, Any]:
+        """
+        Return a meter's cost options.
+
+        Falls back to the pre-per-meter flat options so entries configured
+        before per-meter pricing keep working until reconfigured.
+        """
+        meters = self.config_entry.options.get(CONF_METERS)
+        if meters is None:
+            return self.config_entry.options
+        return meters.get(serial_number, {})
+
     async def _async_build_price_lookup(
-        self, start: datetime, end: datetime
+        self,
+        meter_options: Mapping[str, Any],
+        start: datetime,
+        end: datetime,
     ) -> Callable[[datetime], float | None] | None:
         """
         Build a callable resolving the $/kWh price at a point in time.
@@ -328,18 +343,17 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
 
         Returns None if cost tracking is misconfigured.
         """
-        options = self.config_entry.options
-        cost_mode = options.get(CONF_COST_MODE, COST_MODE_NONE)
+        cost_mode = meter_options.get(CONF_COST_MODE, COST_MODE_NONE)
 
         if cost_mode == COST_MODE_FIXED:
-            fixed_price = options.get(CONF_FIXED_PRICE)
+            fixed_price = meter_options.get(CONF_FIXED_PRICE)
             if not fixed_price:
                 _LOGGER.warning("Fixed cost mode is enabled but no price is set")
                 return None
             return lambda _start: float(fixed_price)
 
         if cost_mode == COST_MODE_ENTITY:
-            entity_id = options.get(CONF_PRICE_ENTITY)
+            entity_id = meter_options.get(CONF_PRICE_ENTITY)
             if not entity_id:
                 _LOGGER.warning("Entity cost mode is enabled but no entity is set")
                 return None
@@ -390,9 +404,11 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
 
         return None
 
-    def _hourly_fixed_charge(self, start: datetime) -> float:
+    def _hourly_fixed_charge(
+        self, meter_options: Mapping[str, Any], start: datetime
+    ) -> float:
         """Return the fixed monthly charge amortized over the hours of a month."""
-        monthly_charge = self.config_entry.options.get(CONF_MONTHLY_CHARGE)
+        monthly_charge = meter_options.get(CONF_MONTHLY_CHARGE)
         if not monthly_charge:
             return 0.0
         days_in_month = calendar.monthrange(start.year, start.month)[1]

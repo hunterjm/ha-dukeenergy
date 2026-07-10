@@ -30,12 +30,22 @@
         }
     },
     "options": {
+        "abort": {
+            "no_meters": "No supported meters were found to configure."
+        },
         "error": {
             "fixed_price_required": "Enter a price per kWh to use fixed pricing.",
             "price_entity_required": "Select an entity that provides the price per kWh."
         },
         "step": {
             "init": {
+                "data": {
+                    "meter": "Meter"
+                },
+                "description": "Choose which meter's cost tracking to configure. Each meter can use its own price.",
+                "title": "Select a meter"
+            },
+            "meter": {
                 "data": {
                     "cost_mode": "Price source",
                     "fixed_price": "Price per kWh",
@@ -48,7 +58,7 @@
                     "monthly_charge": "Optional flat monthly service charge in $, spread evenly across the hours of each month.",
                     "price_entity": "An entity whose state is the current price in $/kWh (e.g. an input number or a template sensor for time-of-use rates). Used when the price source is an entity."
                 },
-                "description": "Publish a cost statistic alongside consumption for the Energy dashboard. Duke Energy does not expose billed cost, so cost is estimated from usage and a price you provide.",
+                "description": "Publish a cost statistic alongside consumption for {meter}. Duke Energy does not expose billed cost, so cost is estimated from usage and a price you provide.",
                 "title": "Energy cost tracking"
             }
         }

@@ -21,6 +21,7 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -29,6 +30,7 @@ from homeassistant.helpers.selector import (
 from .const import (
     CONF_COST_MODE,
     CONF_FIXED_PRICE,
+    CONF_METERS,
     CONF_MONTHLY_CHARGE,
     CONF_PRICE_ENTITY,
     COST_MODE_ENTITY,
@@ -116,15 +118,50 @@ class DukeEnergyOAuth2FlowHandler(
         return self.async_create_entry(title=email or user_id, data=data)
 
 
+CONF_METER = "meter"
+
+
 class DukeEnergyOptionsFlowHandler(OptionsFlow):
-    """Handle Duke Energy options for cost statistics."""
+    """Configure the cost price source for each meter."""
+
+    def __init__(self) -> None:
+        """Initialize the options flow."""
+        self._serial: str = ""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the cost tracking options."""
-        errors: dict[str, str] = {}
+        """Pick a meter to configure, skipping the picker for a single meter."""
+        meters = self._meters()
+        if not meters:
+            return self.async_abort(reason="no_meters")
+        if user_input is not None:
+            self._serial = user_input[CONF_METER]
+            return await self.async_step_meter()
+        if len(meters) == 1:
+            self._serial = next(iter(meters))
+            return await self.async_step_meter()
 
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_METER): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=serial, label=label)
+                            for serial, label in meters.items()
+                        ],
+                        mode=SelectSelectorMode.LIST,
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
+
+    async def async_step_meter(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Configure and save the price source for the selected meter."""
+        errors: dict[str, str] = {}
         if user_input is not None:
             cost_mode = user_input[CONF_COST_MODE]
             if cost_mode == COST_MODE_FIXED and not user_input.get(CONF_FIXED_PRICE):
@@ -134,14 +171,43 @@ class DukeEnergyOptionsFlowHandler(OptionsFlow):
             ):
                 errors[CONF_PRICE_ENTITY] = "price_entity_required"
             if not errors:
-                return self.async_create_entry(title="", data=user_input)
+                meters = dict(self.config_entry.options.get(CONF_METERS, {}))
+                meters[self._serial] = user_input
+                return self.async_create_entry(title="", data={CONF_METERS: meters})
 
-        options = user_input or self.config_entry.options
-        schema = vol.Schema(
+        current = user_input or self.config_entry.options.get(CONF_METERS, {}).get(
+            self._serial, {}
+        )
+        return self.async_show_form(
+            step_id="meter",
+            data_schema=self._meter_schema(current),
+            errors=errors,
+            description_placeholders={"meter": self._meters().get(self._serial, "")},
+        )
+
+    def _meters(self) -> dict[str, str]:
+        """Map each configurable meter's serial to a display label."""
+        coordinator = self.config_entry.runtime_data
+        meters = coordinator.meters if coordinator else {}
+        if meters:
+            return {
+                serial: f"{meter['serviceType'].capitalize()} meter {serial}"
+                for serial, meter in meters.items()
+            }
+        # Entry not loaded: fall back to meters that already have saved options.
+        return {
+            serial: f"Meter {serial}"
+            for serial in self.config_entry.options.get(CONF_METERS, {})
+        }
+
+    @staticmethod
+    def _meter_schema(current: Mapping[str, Any]) -> vol.Schema:
+        """Build the per-meter cost options schema, defaulted to current values."""
+        return vol.Schema(
             {
                 vol.Required(
                     CONF_COST_MODE,
-                    default=options.get(CONF_COST_MODE, COST_MODE_NONE),
+                    default=current.get(CONF_COST_MODE, COST_MODE_NONE),
                 ): SelectSelector(
                     SelectSelectorConfig(
                         options=COST_MODES,
@@ -151,9 +217,7 @@ class DukeEnergyOptionsFlowHandler(OptionsFlow):
                 ),
                 vol.Optional(
                     CONF_FIXED_PRICE,
-                    description={
-                        "suggested_value": options.get(CONF_FIXED_PRICE),
-                    },
+                    description={"suggested_value": current.get(CONF_FIXED_PRICE)},
                 ): NumberSelector(
                     NumberSelectorConfig(
                         min=0,
@@ -164,17 +228,13 @@ class DukeEnergyOptionsFlowHandler(OptionsFlow):
                 ),
                 vol.Optional(
                     CONF_PRICE_ENTITY,
-                    description={
-                        "suggested_value": options.get(CONF_PRICE_ENTITY),
-                    },
+                    description={"suggested_value": current.get(CONF_PRICE_ENTITY)},
                 ): EntitySelector(
                     EntitySelectorConfig(domain=["sensor", "input_number", "number"])
                 ),
                 vol.Optional(
                     CONF_MONTHLY_CHARGE,
-                    description={
-                        "suggested_value": options.get(CONF_MONTHLY_CHARGE),
-                    },
+                    description={"suggested_value": current.get(CONF_MONTHLY_CHARGE)},
                 ): NumberSelector(
                     NumberSelectorConfig(
                         min=0,
@@ -185,5 +245,3 @@ class DukeEnergyOptionsFlowHandler(OptionsFlow):
                 ),
             }
         )
-
-        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

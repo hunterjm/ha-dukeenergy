@@ -18,7 +18,10 @@ MOBILE_REDIRECT_URI = "https://login.duke-energy.com/ios/com.duke-energy.app/cal
 
 # Options for cost statistics.
 # The Duke Energy API does not expose per-interval cost, so cost is derived
-# from consumption using a user-configured price source.
+# from consumption using a user-configured price source. Options are stored
+# per meter under CONF_METERS so meters on different rates can be priced apart.
+CONF_METERS = "meters"
+
 CONF_COST_MODE = "cost_mode"
 COST_MODE_NONE = "none"
 COST_MODE_FIXED = "fixed"
