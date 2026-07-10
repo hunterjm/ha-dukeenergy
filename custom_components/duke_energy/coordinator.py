@@ -1,6 +1,5 @@
 """Coordinator to handle Duke Energy connections."""
 
-import calendar
 import logging
 from bisect import bisect_right
 from collections.abc import Callable, Mapping
@@ -50,6 +49,11 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 _SUPPORTED_METER_TYPES = ("ELECTRIC",)
+
+# Duke Energy service areas are all in America/New_York.
+_TIMEZONE = "America/New_York"
+# Re-fetch/recompute this far before a resume point so corrected hours are rewritten.
+_LOOKBACK = timedelta(days=30)
 
 type DukeEnergyConfigEntry = ConfigEntry[DukeEnergyCoordinator]
 
@@ -119,175 +123,239 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
     async def _async_insert_meter_statistics(
         self, serial_number: str, meter: dict[str, Any]
     ) -> None:
-        """Insert consumption and (if enabled) cost statistics for a meter."""
-        id_prefix = f"{meter['serviceType'].lower()}_{serial_number}"
-        consumption_statistic_id = f"{DOMAIN}:{id_prefix}_energy_consumption"
-        cost_statistic_id = f"{DOMAIN}:{id_prefix}_energy_cost"
+        """Insert a meter's consumption (from the API) and cost (derived locally)."""
+        consumption_id, cost_id = self._meter_statistic_ids(serial_number, meter)
+        self._statistic_ids.add(consumption_id)
+        await self._async_update_consumption(serial_number, meter)
+
         meter_options = self._meter_options(serial_number)
-        cost_enabled = (
-            meter_options.get(CONF_COST_MODE, COST_MODE_NONE) != COST_MODE_NONE
-        )
-        self._statistic_ids.add(consumption_statistic_id)
-        if cost_enabled:
-            self._statistic_ids.add(cost_statistic_id)
-        _LOGGER.debug("Updating Statistics for %s", consumption_statistic_id)
+        if meter_options.get(CONF_COST_MODE, COST_MODE_NONE) != COST_MODE_NONE:
+            self._statistic_ids.add(cost_id)
+            await self._async_update_cost(serial_number, meter, meter_options)
 
-        statistic_ids = {consumption_statistic_id}
-        if cost_enabled:
-            statistic_ids.add(cost_statistic_id)
+    async def async_rebuild_costs(self) -> None:
+        """
+        Recompute cost from stored consumption after an options change.
 
-        # Start time of each statistic's newest row; None means it has no
-        # history yet and must be backfilled from scratch.
-        consumption_resume = await self._async_last_stat_start(consumption_statistic_id)
-        cost_resume = (
-            await self._async_last_stat_start(cost_statistic_id)
-            if cost_enabled
-            else None
-        )
+        Cost is derived from the consumption statistic, so changing a price is a
+        local recompute -- no Duke API calls and no consumption rebuild.
+        """
+        for serial_number, meter in self.meters.items():
+            _, cost_id = self._meter_statistic_ids(serial_number, meter)
+            get_instance(self.hass).async_clear_statistics([cost_id])
+            meter_options = self._meter_options(serial_number)
+            if meter_options.get(CONF_COST_MODE, COST_MODE_NONE) == COST_MODE_NONE:
+                self._statistic_ids.discard(cost_id)
+                continue
+            self._statistic_ids.add(cost_id)
+            await self._async_update_cost(
+                serial_number, meter, meter_options, full=True
+            )
 
-        # Fetch usage from the earliest resume point so a cost statistic that
-        # lagged behind consumption (e.g. the price entity was unavailable) has
-        # those hours re-fetched and can catch up instead of stalling forever.
-        resume_points = [consumption_resume]
-        if cost_enabled:
-            resume_points.append(cost_resume)
-        window_from = (
-            None
-            if None in resume_points
-            else min(point for point in resume_points if point is not None)
-        )
-
-        usage = await self._async_get_energy_usage(meter, window_from)
-        if window_from is not None and not usage:
-            _LOGGER.debug("No recent usage data. Skipping update")
+    async def _async_update_consumption(
+        self, serial_number: str, meter: dict[str, Any]
+    ) -> None:
+        """Insert consumption statistics from the Duke API (incremental)."""
+        consumption_id, _ = self._meter_statistic_ids(serial_number, meter)
+        resume = await self._async_last_stat_start(consumption_id)
+        usage = await self._async_get_energy_usage(meter, resume)
+        if resume is not None and not usage:
+            _LOGGER.debug("No recent usage for %s. Skipping update", consumption_id)
             return
 
-        # Each baseline is the (sum, start time) to resume statistics from.
-        consumption_baseline: tuple[float, float | None] = (0.0, None)
-        cost_baseline: tuple[float, float | None] = (0.0, None)
-        if window_from is not None:
+        baseline: tuple[float, float | None] = (0.0, None)
+        if resume is not None:
             stats = await get_instance(self.hass).async_add_executor_job(
                 statistics_during_period,
                 self.hass,
                 min(usage.keys()),
                 None,
-                statistic_ids,
+                {consumption_id},
                 "hour",
                 None,
                 {"sum"},
             )
-            consumption_baseline = self._resume_baseline(
-                stats.get(consumption_statistic_id)
-            )
-            if cost_enabled:
-                cost_baseline = self._resume_baseline(stats.get(cost_statistic_id))
+            baseline = self._resume_baseline(stats.get(consumption_id), resume)
 
-        price_at: Callable[[datetime], float | None] | None = None
-        if cost_enabled and usage:
-            price_at = await self._async_build_price_lookup(
-                meter_options, min(usage.keys()), max(usage.keys())
-            )
-
-        consumption_statistics, cost_statistics = self._build_statistic_rows(
-            usage, consumption_baseline, cost_baseline, price_at, meter_options
+        rows = self._build_consumption_rows(
+            {start: data["energy"] for start, data in usage.items()}, baseline
+        )
+        _LOGGER.debug("Adding %s consumption stats for %s", len(rows), consumption_id)
+        async_add_external_statistics(
+            self.hass, self._energy_metadata(serial_number, meter), rows
         )
 
-        name_prefix = f"Duke Energy {meter['serviceType'].capitalize()} {serial_number}"
-        consumption_metadata = StatisticMetaData(
+    async def _async_update_cost(
+        self,
+        serial_number: str,
+        meter: dict[str, Any],
+        meter_options: Mapping[str, Any],
+        *,
+        full: bool = False,
+    ) -> None:
+        """
+        Insert cost statistics derived from the stored consumption statistic.
+
+        Reads the per-hour energy already recorded for consumption and prices it
+        locally, so cost never triggers its own Duke API fetch. ``full`` rebuilds
+        the entire history (after an options change); otherwise it resumes.
+        """
+        consumption_id, cost_id = self._meter_statistic_ids(serial_number, meter)
+        resume = None if full else await self._async_last_stat_start(cost_id)
+        energy = await self._async_consumption_energy(consumption_id, resume)
+        if not energy:
+            return
+
+        baseline: tuple[float, float | None] = (0.0, None)
+        if resume is not None:
+            stats = await get_instance(self.hass).async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                min(energy),
+                None,
+                {cost_id},
+                "hour",
+                None,
+                {"sum"},
+            )
+            baseline = self._resume_baseline(stats.get(cost_id), resume)
+
+        price_at = await self._async_build_price_lookup(
+            meter_options, min(energy), max(energy)
+        )
+        if price_at is None:
+            return
+        rows = self._build_cost_rows(energy, baseline, price_at, meter_options)
+        if not rows:
+            return
+        _LOGGER.debug("Adding %s cost stats for %s", len(rows), cost_id)
+        async_add_external_statistics(
+            self.hass, self._cost_metadata(serial_number, meter), rows
+        )
+
+    @staticmethod
+    def _meter_statistic_ids(
+        serial_number: str, meter: dict[str, Any]
+    ) -> tuple[str, str]:
+        """Return the (consumption, cost) external statistic ids for a meter."""
+        id_prefix = f"{meter['serviceType'].lower()}_{serial_number}"
+        return (
+            f"{DOMAIN}:{id_prefix}_energy_consumption",
+            f"{DOMAIN}:{id_prefix}_energy_cost",
+        )
+
+    def _energy_metadata(
+        self, serial_number: str, meter: dict[str, Any]
+    ) -> StatisticMetaData:
+        """Build consumption statistic metadata for a meter."""
+        consumption_id, _ = self._meter_statistic_ids(serial_number, meter)
+        return StatisticMetaData(
             mean_type=StatisticMeanType.NONE,
             has_sum=True,
-            name=f"{name_prefix} Consumption",
+            name=(
+                f"Duke Energy {meter['serviceType'].capitalize()} "
+                f"{serial_number} Consumption"
+            ),
             source=DOMAIN,
-            statistic_id=consumption_statistic_id,
+            statistic_id=consumption_id,
             unit_class=EnergyConverter.UNIT_CLASS,
             unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR
             if meter["serviceType"] == "ELECTRIC"
             else UnitOfVolume.CENTUM_CUBIC_FEET,
         )
 
-        _LOGGER.debug(
-            "Adding %s statistics for %s",
-            len(consumption_statistics),
-            consumption_statistic_id,
-        )
-        async_add_external_statistics(
-            self.hass, consumption_metadata, consumption_statistics
+    def _cost_metadata(
+        self, serial_number: str, meter: dict[str, Any]
+    ) -> StatisticMetaData:
+        """Build cost statistic metadata for a meter."""
+        _, cost_id = self._meter_statistic_ids(serial_number, meter)
+        return StatisticMetaData(
+            mean_type=StatisticMeanType.NONE,
+            has_sum=True,
+            name=(
+                f"Duke Energy {meter['serviceType'].capitalize()} {serial_number} Cost"
+            ),
+            source=DOMAIN,
+            statistic_id=cost_id,
+            unit_class=None,
+            unit_of_measurement=None,
         )
 
-        if cost_enabled and cost_statistics:
-            cost_metadata = StatisticMetaData(
-                mean_type=StatisticMeanType.NONE,
-                has_sum=True,
-                name=f"{name_prefix} Cost",
-                source=DOMAIN,
-                statistic_id=cost_statistic_id,
-                unit_class=None,
-                unit_of_measurement=None,
-            )
-            _LOGGER.debug(
-                "Adding %s statistics for %s",
-                len(cost_statistics),
-                cost_statistic_id,
-            )
-            async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
+    @staticmethod
+    def _build_consumption_rows(
+        energy_by_hour: dict[datetime, float],
+        baseline: tuple[float, float | None],
+    ) -> list[StatisticData]:
+        """Build cumulative consumption rows for hours after the baseline."""
+        total, resume = baseline
+        rows: list[StatisticData] = []
+        for start, energy in energy_by_hour.items():
+            if resume is not None and start.timestamp() <= resume:
+                continue
+            total += energy
+            rows.append(StatisticData(start=start, state=energy, sum=total))
+        return rows
 
-    def _build_statistic_rows(
+    def _build_cost_rows(
         self,
-        usage: dict[datetime, dict[str, float | int]],
-        consumption_baseline: tuple[float, float | None],
-        cost_baseline: tuple[float, float | None],
-        price_at: Callable[[datetime], float | None] | None,
+        energy_by_hour: dict[datetime, float],
+        baseline: tuple[float, float | None],
+        price_at: Callable[[datetime], float | None],
         meter_options: Mapping[str, Any],
-    ) -> tuple[list[StatisticData], list[StatisticData]]:
+    ) -> list[StatisticData]:
         """
-        Build consumption and cost statistic rows from usage data.
+        Build cumulative cost rows from per-hour energy.
 
-        Each baseline is the (sum, start time) to resume from. Consumption and
-        cost carry independent resume times so a cost statistic that lags
-        behind (price entity unavailable, or cost enabled after consumption
-        already existed) can catch up on later refreshes.
+        Stops at the first hour without a resolvable price so the sum stays
+        contiguous; a later refresh resumes there once a price is available.
         """
-        consumption_sum, last_stats_time = consumption_baseline
-        cost_sum, cost_last_stats_time = cost_baseline
-        consumption_statistics: list[StatisticData] = []
-        cost_statistics: list[StatisticData] = []
-        cost_incomplete = False
-
-        for start, data in usage.items():
-            energy = data["energy"]
-            if last_stats_time is None or start.timestamp() > last_stats_time:
-                consumption_sum += energy
-                consumption_statistics.append(
-                    StatisticData(start=start, state=energy, sum=consumption_sum)
-                )
-
-            if (
-                price_at is None
-                or cost_incomplete
-                or (
-                    cost_last_stats_time is not None
-                    and start.timestamp() <= cost_last_stats_time
-                )
-            ):
+        total, resume = baseline
+        rows: list[StatisticData] = []
+        for start, energy in energy_by_hour.items():
+            if resume is not None and start.timestamp() <= resume:
                 continue
             price = price_at(start)
             if price is None:
-                # Stop instead of skipping so the sum stays contiguous;
-                # the next refresh retries these hours.
-                cost_incomplete = True
-                _LOGGER.warning(
-                    "No price available for %s; deferring cost statistics", start
-                )
-                continue
-            cost_state = energy * price + self._hourly_fixed_charge(
-                meter_options, start
-            )
-            cost_sum += cost_state
-            cost_statistics.append(
-                StatisticData(start=start, state=cost_state, sum=cost_sum)
-            )
+                _LOGGER.debug("No price available for %s; deferring cost", start)
+                break
+            charge = energy * price + self._hourly_fixed_charge(meter_options, start)
+            total += charge
+            rows.append(StatisticData(start=start, state=charge, sum=total))
+        return rows
 
-        return consumption_statistics, cost_statistics
+    async def _async_consumption_energy(
+        self, consumption_id: str, resume: float | None
+    ) -> dict[datetime, float]:
+        """
+        Return per-hour energy from the stored consumption statistic.
+
+        Reads locally recorded data (no Duke API call). When resuming it starts a
+        lookback before the resume point so corrected hours are recomputed; a
+        full rebuild (resume is None) reads the whole history.
+        """
+        tz = await dt_util.async_get_time_zone(_TIMEZONE)
+        start = (
+            dt_util.utc_from_timestamp(resume) - _LOOKBACK
+            if resume is not None
+            else dt_util.utc_from_timestamp(0)
+        )
+        stats = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start,
+            None,
+            {consumption_id},
+            "hour",
+            None,
+            {"state"},
+        )
+        return {
+            dt_util.utc_from_timestamp(row["start"]).astimezone(tz): cast(
+                "float", row["state"]
+            )
+            for row in stats.get(consumption_id, [])
+            if row.get("state") is not None
+        }
 
     async def _async_last_stat_start(self, statistic_id: str) -> float | None:
         """Return the start time of a statistic's newest row, or None if empty."""
@@ -304,16 +372,23 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
         return None
 
     @staticmethod
-    def _resume_baseline(rows: list[Any] | None) -> tuple[float, float | None]:
+    def _resume_baseline(
+        rows: list[Any] | None, resume: float | None
+    ) -> tuple[float, float | None]:
         """
-        Return the (sum, start) to resume from: the oldest row in the window.
+        Return the (sum, start) to resume a statistic from.
 
-        Resuming from the window start lets the 30-day usage lookback rewrite
-        recently corrected hours while keeping the running sum contiguous.
+        Anchors to roughly the lookback window before the statistic's own newest
+        row, so recently corrected hours are rewritten without dragging the
+        resume point back to the (possibly older) start of the query window.
         """
-        if rows:
-            return cast("float", rows[0]["sum"]), rows[0]["start"]
-        return 0.0, None
+        if not rows or resume is None:
+            return 0.0, None
+        threshold = resume - _LOOKBACK.total_seconds()
+        for row in rows:
+            if row["start"] >= threshold:
+                return cast("float", row["sum"]), row["start"]
+        return cast("float", rows[-1]["sum"]), rows[-1]["start"]
 
     def _meter_options(self, serial_number: str) -> Mapping[str, Any]:
         """
@@ -407,12 +482,18 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
     def _hourly_fixed_charge(
         self, meter_options: Mapping[str, Any], start: datetime
     ) -> float:
-        """Return the fixed monthly charge amortized over the hours of a month."""
+        """Return the monthly charge amortized over the actual hours of the month."""
         monthly_charge = meter_options.get(CONF_MONTHLY_CHARGE)
         if not monthly_charge:
             return 0.0
-        days_in_month = calendar.monthrange(start.year, start.month)[1]
-        return float(monthly_charge) / (days_in_month * 24)
+        month_start = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        years, month_index = divmod(month_start.month, 12)
+        next_month = month_start.replace(
+            year=month_start.year + years, month=month_index + 1
+        )
+        # timestamp() spans real time, so DST-transition months get 23/25h days.
+        hours = (next_month.timestamp() - month_start.timestamp()) / 3600
+        return float(monthly_charge) / hours
 
     async def _async_get_energy_usage(
         self, meter: dict[str, Any], start_time: float | None = None
@@ -429,8 +510,8 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
         # All of Duke Energy Service Areas are currently in America/New_York timezone
         # May need to re-think this if that ever changes and determine timezone based
         # on the service address somehow.
-        tz = await dt_util.async_get_time_zone("America/New_York")
-        lookback = timedelta(days=30)
+        tz = await dt_util.async_get_time_zone(_TIMEZONE)
+        lookback = _LOOKBACK
         one = timedelta(days=1)
         if start_time is None:
             # Max 3 years of data

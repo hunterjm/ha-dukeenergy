@@ -175,14 +175,18 @@ class DukeEnergyOptionsFlowHandler(OptionsFlow):
                 meters[self._serial] = user_input
                 return self.async_create_entry(title="", data={CONF_METERS: meters})
 
+        unit = self._meter_unit(self._serial)
         current = user_input or self.config_entry.options.get(CONF_METERS, {}).get(
             self._serial, {}
         )
         return self.async_show_form(
             step_id="meter",
-            data_schema=self._meter_schema(current),
+            data_schema=self._meter_schema(current, unit),
             errors=errors,
-            description_placeholders={"meter": self._meters().get(self._serial, "")},
+            description_placeholders={
+                "meter": self._meters().get(self._serial, ""),
+                "unit": unit,
+            },
         )
 
     def _meters(self) -> dict[str, str]:
@@ -200,8 +204,15 @@ class DukeEnergyOptionsFlowHandler(OptionsFlow):
             for serial in self.config_entry.options.get(CONF_METERS, {})
         }
 
+    def _meter_unit(self, serial: str) -> str:
+        """Return the price unit for a meter (kWh for electric, CCF for gas)."""
+        coordinator = self.config_entry.runtime_data
+        meters = coordinator.meters if coordinator else {}
+        service_type = meters.get(serial, {}).get("serviceType")
+        return "CCF" if service_type == "GAS" else "kWh"
+
     @staticmethod
-    def _meter_schema(current: Mapping[str, Any]) -> vol.Schema:
+    def _meter_schema(current: Mapping[str, Any], unit: str) -> vol.Schema:
         """Build the per-meter cost options schema, defaulted to current values."""
         return vol.Schema(
             {
@@ -223,7 +234,7 @@ class DukeEnergyOptionsFlowHandler(OptionsFlow):
                         min=0,
                         step="any",
                         mode=NumberSelectorMode.BOX,
-                        unit_of_measurement="$/kWh",
+                        unit_of_measurement=f"$/{unit}",
                     )
                 ),
                 vol.Optional(

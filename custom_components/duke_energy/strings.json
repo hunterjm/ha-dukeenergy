@@ -43,14 +43,14 @@
         "description": "Publish a cost statistic alongside consumption for {meter}. Duke Energy does not expose billed cost, so cost is estimated from usage and a price you provide.",
         "data": {
           "cost_mode": "Price source",
-          "fixed_price": "Price per kWh",
+          "fixed_price": "Fixed price",
           "price_entity": "Price entity",
           "monthly_charge": "Fixed monthly charge"
         },
         "data_description": {
-          "cost_mode": "Where the $/kWh price comes from.",
-          "fixed_price": "Used when the price source is a fixed price.",
-          "price_entity": "An entity whose state is the current price in $/kWh (e.g. an input number or a template sensor for time-of-use rates). Used when the price source is an entity.",
+          "cost_mode": "Where the price per {unit} comes from.",
+          "fixed_price": "A single all-in price per {unit}.",
+          "price_entity": "An entity whose state is the current price per {unit} (e.g. an input number, or a template sensor for time-of-use rates).",
           "monthly_charge": "Optional flat monthly service charge in $, spread evenly across the hours of each month."
         }
       }
@@ -67,8 +67,8 @@
     "cost_mode": {
       "options": {
         "none": "Disabled",
-        "fixed": "Fixed price per kWh",
-        "entity": "Track a price entity ($/kWh)"
+        "fixed": "Fixed price",
+        "entity": "Track a price entity"
       }
     }
   }
