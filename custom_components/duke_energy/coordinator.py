@@ -31,7 +31,7 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-_SUPPORTED_METER_TYPES = ("ELECTRIC",)
+_SUPPORTED_METER_TYPES = ("ELECTRIC", "GAS")
 
 type DukeEnergyConfigEntry = ConfigEntry[DukeEnergyCoordinator]
 
