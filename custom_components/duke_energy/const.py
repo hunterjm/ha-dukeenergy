@@ -1,6 +1,12 @@
 """Constants for the Duke Energy integration."""
 
 DOMAIN = "duke_energy"
+CONF_COST_TRACKING = "cost_tracking"
+CONF_EFFECTIVE_DATE = "effective_date"
+CONF_ENABLED = "enabled"
+CONF_RATE = "rate"
+CONF_RATES = "rates"
+SUPPORTED_METER_TYPES = ("ELECTRIC", "GAS")
 
 # Auth0 OAuth2 configuration for Duke Energy
 OAUTH2_AUTHORIZE = "https://login.duke-energy.com/authorize"
