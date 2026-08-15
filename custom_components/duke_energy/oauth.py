@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import logging
-import secrets
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import jwt
 from homeassistant.helpers.config_entry_oauth2_flow import (
@@ -16,11 +15,8 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 from .const import (
-    AUTH0_CLIENT,
-    MOBILE_REDIRECT_URI,
     OAUTH2_AUTHORIZE,
     OAUTH2_CLIENT_ID,
-    OAUTH2_SCOPES,
     OAUTH2_TOKEN,
 )
 
@@ -46,33 +42,12 @@ class DukeEnergyOAuth2Implementation(LocalOAuth2ImplementationWithPkce):
         """Return the name of the implementation."""
         return "Duke Energy"
 
-    @property
-    def redirect_uri(self) -> str:
-        """Return the redirect URI for Duke Energy mobile app OAuth flow."""
-        return MOBILE_REDIRECT_URI
-
-    @property
-    def extra_authorize_data(self) -> dict:
-        """Extra data for the authorize request."""
-        data = {
-            "scope": " ".join(OAUTH2_SCOPES),
-            "auth0Client": AUTH0_CLIENT,
-            "nonce": secrets.token_urlsafe(32),
-        }
-        data.update(super().extra_authorize_data)
-        return data
-
-    async def async_resolve_external_data(self, external_data: Any) -> dict:
-        """Resolve external data to tokens, adjusting expiry for id_token."""
-        token = await super().async_resolve_external_data(external_data)
-        return self._adjust_token_expiry(token)
-
     async def async_refresh_token(self, token: dict) -> dict:
         """Refresh tokens, adjusting expiry for id_token."""
         new_token = await super().async_refresh_token(token)
-        return self._adjust_token_expiry(new_token)
+        return self.adjust_token_expiry(new_token)
 
-    def _adjust_token_expiry(self, token: dict) -> dict:
+    def adjust_token_expiry(self, token: dict) -> dict:
         """
         Adjust expires_at/expires_in based on id_token's exp claim.
 

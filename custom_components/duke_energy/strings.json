@@ -1,8 +1,16 @@
 {
   "config": {
     "step": {
-      "pick_implementation": {
-        "title": "[%key:common::config_flow::title::oauth2_pick_implementation%]"
+      "user": {
+        "title": "Sign in to Duke Energy",
+        "description": "Open [Duke Energy login]({authorization_url}) in a normal browser. After signing in, Duke Energy will show a 404 page. This is expected. Return here to continue. No Chrome extension is required."
+      },
+      "callback_url": {
+        "title": "Paste callback URL",
+        "description": "Copy the COMPLETE URL from the browser address bar on the Duke Energy 404 page and paste it below.",
+        "data": {
+          "callback_url": "Complete callback URL"
+        }
       },
       "reauth_confirm": {
         "title": "[%key:common::config_flow::title::reauth%]",
@@ -24,9 +32,15 @@
       "invalid_token": "The authentication token was invalid or missing required information",
       "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
       "wrong_account": "You must reauthenticate with the same Duke Energy account"
+      ,
+      "authentication_restarted": "The authentication flow was interrupted. Start the Duke Energy sign-in again.",
+      "oauth_callback_error": "Duke Energy rejected authorization: {error}. {error_description}"
     },
     "create_entry": {
       "default": "[%key:common::config_flow::create_entry::authenticated%]"
+    },
+    "error": {
+      "invalid_callback": "The callback URL could not be validated or exchanged. Copy the complete URL from the Duke Energy 404 page and try again."
     }
   },
   "options": {

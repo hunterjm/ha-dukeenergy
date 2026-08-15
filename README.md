@@ -4,21 +4,17 @@ A custom component to sync historical electricity usage for Duke Energy customer
 
 ## Why?
 
-In November 2025, Duke Energy migrated their API authentication to use Auth0 which broke the existing core integration. In order to get around this, we needed to build a custom chrome extension that captured the OAuth callback from the mobile app flow to restore functionality. Because of the extensive and limited configuration options, it was decided that this integration would be better served as a custom integration than to try and put it back in core.
+In November 2025, Duke Energy migrated its API authentication to Auth0, which broke the existing core integration. This custom integration uses Duke Energy's browser login and a manual callback handoff while retaining OAuth PKCE and refresh-token authentication.
 
 ## Install
 
-> [!IMPORTANT]
-> All steps below must be performed in the Google Chrome browser on a desktop.
-> The chrome extension is required to successfully authenticate with Duke Energy. Do not skip this step!
+1. Add this repository to HACS and install the integration.
+2. Restart Home Assistant.
+3. Add Duke Energy from **Settings > Devices & services**. Existing entries will prompt for reauthentication when needed.
+4. Select the Duke Energy login link shown by Home Assistant and sign in using a normal browser.
+5. After a successful login, Duke Energy redirects to a 404 page. This is expected.
+6. Copy the complete URL from that page's browser address bar and paste it into Home Assistant.
 
-1. Download the latest chrome extension from the aiodukeenergy release page [here](https://github.com/hunterjm/aiodukeenergy/releases/latest/download/chrome-extension.zip).
-2. Extract the folder.
-3. In Google Chrome, visit [chrome://extensions/](chrome://extensions/).
-4. Enable `Developer mode` in the top right.
-5. Click `Load unpacked` and select the extracted extension.
-6. Add [this repository](https://my.home-assistant.io/redirect/hacs_repository/?owner=hunterjm&repository=ha-dukeenergy&category=integration) to HACS and install.
-7. Restart Home Assistant
-8. If you already had the core integration installed, it should prompt you to re-authenticate. Otherwise, add the integration from Devices and Services.
+No Chrome extension is required. Home Assistant stores the resulting OAuth tokens and refreshes them automatically until Duke Energy invalidates the refresh token.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=hunterjm&repository=ha-dukeenergy&category=integration)

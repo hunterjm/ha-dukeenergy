@@ -8,8 +8,14 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
-import jwt
 import voluptuous as vol
+from aiodukeenergy import (
+    Auth0Client,
+    AuthorizationTransaction,
+    DukeEnergyAuthError,
+    DukeEnergyOAuthCallbackError,
+)
+from homeassistant import config_entries
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
     ConfigEntry,
@@ -17,7 +23,7 @@ from homeassistant.config_entries import (
     OptionsFlowWithReload,
 )
 from homeassistant.core import callback
-from homeassistant.helpers import config_entry_oauth2_flow, selector
+from homeassistant.helpers import aiohttp_client, selector
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -37,16 +43,15 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-class DukeEnergyOAuth2FlowHandler(
-    config_entry_oauth2_flow.AbstractOAuth2FlowHandler,
-    domain=DOMAIN,
-):
+class DukeEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Duke Energy."""
 
     VERSION = 2
     MINOR_VERSION = 1
 
     DOMAIN = DOMAIN
+
+    _auth_transaction: AuthorizationTransaction | None = None
 
     @staticmethod
     @callback
@@ -56,17 +61,22 @@ class DukeEnergyOAuth2FlowHandler(
         """Create the options flow."""
         return DukeEnergyOptionsFlow()
 
-    @property
-    def logger(self) -> logging.Logger:
-        """Return logger."""
-        return _LOGGER
-
-    async def async_step_pick_implementation(
-        self, _: dict[str, Any] | None = None
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle picking implementation - directly use our implementation."""
-        self.flow_impl = DukeEnergyOAuth2Implementation(self.hass)
-        return await self.async_step_auth()
+        """Start a manual Duke Energy browser authorization."""
+        if self._auth_transaction is None:
+            client = Auth0Client(aiohttp_client.async_get_clientsession(self.hass))
+            self._auth_transaction = client.create_authorization_transaction()
+        if user_input is not None:
+            return await self.async_step_callback_url()
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "authorization_url": self._auth_transaction.authorize_url
+            },
+        )
 
     async def async_step_reauth(self, _: Mapping[str, Any]) -> ConfigFlowResult:
         """Perform reauth upon an API authentication error."""
@@ -80,23 +90,58 @@ class DukeEnergyOAuth2FlowHandler(
             return self.async_show_form(step_id="reauth_confirm")
         return await self.async_step_user()
 
-    async def async_oauth_create_entry(self, data: dict[str, Any]) -> ConfigFlowResult:
-        """Create an entry for the flow."""
-        # Extract user info from id_token
+    async def async_step_callback_url(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Accept and validate the complete Duke Energy callback URL."""
+        if self._auth_transaction is None:
+            return self.async_abort(reason="authentication_restarted")
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            client = Auth0Client(aiohttp_client.async_get_clientsession(self.hass))
+            try:
+                result = await client.complete_authorization(
+                    self._auth_transaction, user_input["callback_url"]
+                )
+            except DukeEnergyOAuthCallbackError as err:
+                return self.async_abort(
+                    reason="oauth_callback_error",
+                    description_placeholders={
+                        "error": err.error,
+                        "error_description": err.description or "No description",
+                    },
+                )
+            except DukeEnergyAuthError:
+                _LOGGER.exception("Duke Energy manual authorization failed")
+                errors["base"] = "invalid_callback"
+            else:
+                self._auth_transaction = None
+                implementation = DukeEnergyOAuth2Implementation(self.hass)
+                token = implementation.adjust_token_expiry(result.token)
+                return await self._async_create_or_update_entry(
+                    token, result.id_token_claims
+                )
+        return self.async_show_form(
+            step_id="callback_url",
+            data_schema=vol.Schema({vol.Required("callback_url"): str}),
+            errors=errors,
+        )
+
+    async def _async_create_or_update_entry(
+        self, token: dict[str, Any], claims: dict[str, Any]
+    ) -> ConfigFlowResult:
+        """Create or reauthenticate an entry using verified identity claims."""
         try:
-            id_token = data["token"]["id_token"]
-            token_data = jwt.decode(id_token, options={"verify_signature": False})
-            user_id = token_data.get("internal_identifier", "").lower()
-            email = token_data.get("email", "").lower()
-        except (KeyError, ValueError):
-            _LOGGER.exception("Failed to decode ID token")
-            return self.async_abort(reason="oauth_error")
+            user_id = claims.get("internal_identifier", "").lower()
+            email = claims.get("email", "").lower()
+        except AttributeError:
+            return self.async_abort(reason="invalid_token")
 
         if not user_id:
-            _LOGGER.error("No internal_identifier in ID token claims")
-            return self.async_abort(reason="oauth_error")
+            return self.async_abort(reason="invalid_token")
 
         await self.async_set_unique_id(user_id)
+        data = {"auth_implementation": DOMAIN, "token": token}
         if self.source == SOURCE_REAUTH:
             self._abort_if_unique_id_mismatch(reason="wrong_account")
             return self.async_update_reload_and_abort(

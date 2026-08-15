@@ -14,19 +14,32 @@
             "oauth_unauthorized": "OAuth authorization error while obtaining access token.",
             "reauth_successful": "Re-authentication was successful",
             "user_rejected_authorize": "Account linking rejected: {error}",
-            "wrong_account": "You must reauthenticate with the same Duke Energy account"
+            "wrong_account": "You must reauthenticate with the same Duke Energy account",
+            "authentication_restarted": "The authentication flow was interrupted. Start the Duke Energy sign-in again.",
+            "oauth_callback_error": "Duke Energy rejected authorization: {error}. {error_description}"
         },
         "create_entry": {
             "default": "Successfully authenticated"
         },
         "step": {
-            "pick_implementation": {
-                "title": "Pick authentication method"
+            "user": {
+                "description": "Open [Duke Energy login]({authorization_url}) in a normal browser. After signing in, Duke Energy will show a 404 page. This is expected. Return here to continue. No Chrome extension is required.",
+                "title": "Sign in to Duke Energy"
+            },
+            "callback_url": {
+                "data": {
+                    "callback_url": "Complete callback URL"
+                },
+                "description": "Copy the COMPLETE URL from the browser address bar on the Duke Energy 404 page and paste it below.",
+                "title": "Paste callback URL"
             },
             "reauth_confirm": {
                 "description": "The Duke Energy integration needs to re-authenticate your account",
                 "title": "Authentication expired for {name}"
             }
+        },
+        "error": {
+            "invalid_callback": "The callback URL could not be validated or exchanged. Copy the complete URL from the Duke Energy 404 page and try again."
         }
     },
     "options": {
