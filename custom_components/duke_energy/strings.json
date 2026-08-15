@@ -28,5 +28,117 @@
     "create_entry": {
       "default": "[%key:common::config_flow::create_entry::authenticated%]"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Cost tracking",
+        "menu_options": {
+          "electric": "Electric rates",
+          "gas": "Gas rates",
+          "save": "Save and reload"
+        }
+      },
+      "electric": {
+        "title": "Electric rate history",
+        "description": "Configured rate periods:\n\n{rate_periods}",
+        "menu_options": {
+          "electric_settings": "Enable or disable cost tracking",
+          "electric_add": "Add rate period",
+          "electric_edit": "Edit rate period",
+          "electric_delete": "Delete rate period",
+          "init": "Back"
+        }
+      },
+      "gas": {
+        "title": "Gas rate history",
+        "description": "Configured rate periods:\n\n{rate_periods}",
+        "menu_options": {
+          "gas_settings": "Enable or disable cost tracking",
+          "gas_add": "Add rate period",
+          "gas_edit": "Edit rate period",
+          "gas_delete": "Delete rate period",
+          "init": "Back"
+        }
+      },
+      "electric_settings": {
+        "title": "Electric cost tracking",
+        "data": {
+          "enabled": "Enable electric cost tracking"
+        }
+      },
+      "gas_settings": {
+        "title": "Gas cost tracking",
+        "data": {
+          "enabled": "Enable gas cost tracking"
+        }
+      },
+      "electric_add": {
+        "title": "Add electric rate period",
+        "data": {
+          "effective_date": "Billing-period start date",
+          "rate": "Variable cost per kWh",
+          "no_rate_boundary": "This is a no-rate boundary"
+        }
+      },
+      "gas_add": {
+        "title": "Add gas rate period",
+        "data": {
+          "effective_date": "Billing-period start date",
+          "rate": "Variable cost per CCF",
+          "no_rate_boundary": "This is a no-rate boundary"
+        }
+      },
+      "electric_edit": {
+        "title": "Select electric rate period",
+        "data": {
+          "effective_date": "Rate period"
+        }
+      },
+      "gas_edit": {
+        "title": "Select gas rate period",
+        "data": {
+          "effective_date": "Rate period"
+        }
+      },
+      "electric_edit_period": {
+        "title": "Edit electric rate period",
+        "data": {
+          "effective_date": "Billing-period start date",
+          "rate": "Variable cost per kWh",
+          "no_rate_boundary": "This is a no-rate boundary"
+        }
+      },
+      "gas_edit_period": {
+        "title": "Edit gas rate period",
+        "data": {
+          "effective_date": "Billing-period start date",
+          "rate": "Variable cost per CCF",
+          "no_rate_boundary": "This is a no-rate boundary"
+        }
+      },
+      "electric_delete": {
+        "title": "Delete electric rate period",
+        "data": {
+          "effective_date": "Rate period"
+        }
+      },
+      "gas_delete": {
+        "title": "Delete gas rate period",
+        "data": {
+          "effective_date": "Rate period"
+        }
+      }
+    },
+    "error": {
+      "invalid_rate": "Enter a non-negative decimal rate or select the no-rate boundary option"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "total_cost": {
+        "name": "Total cost"
+      }
+    }
   }
 }

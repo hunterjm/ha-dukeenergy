@@ -5,19 +5,22 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from aiodukeenergy import DukeEnergy
+from homeassistant.const import Platform
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 
 from .api import DukeEnergyAuth
 from .const import DOMAIN
 from .coordinator import DukeEnergyConfigEntry, DukeEnergyCoordinator
+from .diagnostic import SanitizedDiagnosticDukeEnergy
 from .oauth import DukeEnergyOAuth2Implementation
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
+
+PLATFORMS = (Platform.SENSOR,)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: DukeEnergyConfigEntry) -> bool:
@@ -47,11 +50,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: DukeEnergyConfigEntry) -
         raise ConfigEntryAuthFailed from err
 
     auth = DukeEnergyAuth(aiohttp_client.async_get_clientsession(hass), session)
-    client = DukeEnergy(auth)
+    client = SanitizedDiagnosticDukeEnergy(auth)
 
     coordinator = DukeEnergyCoordinator(hass, client, entry)
+    await coordinator.async_initialize_costs()
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
@@ -67,8 +72,6 @@ async def async_migrate_entry(
     return True
 
 
-async def async_unload_entry(
-    _hass: HomeAssistant, _entry: DukeEnergyConfigEntry
-) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: DukeEnergyConfigEntry) -> bool:
     """Unload a config entry."""
-    return True
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
