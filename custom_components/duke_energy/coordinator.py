@@ -1,11 +1,9 @@
 """Coordinator to handle Duke Energy connections."""
 
-import json
 import logging
 import math
 from datetime import date, datetime, time, timedelta, tzinfo
 from decimal import Decimal
-from pathlib import Path
 from typing import Any, TypedDict, cast
 
 from aiodukeenergy import DukeEnergy, DukeEnergyAuthError
@@ -211,19 +209,7 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[dict[str, DukeEnergyCostData]]
             )
 
         await self.cost_ledger.async_save()
-        await self._async_write_sanitized_diagnostic()
-
         return cost_data
-
-    async def _async_write_sanitized_diagnostic(self) -> None:
-        """Write the temporary diagnostic containing no private values."""
-        report_getter = getattr(self.api, "sanitized_diagnostic", None)
-        if report_getter is None:
-            return
-        report = report_getter()
-        target = Path(self.hass.config.path("duke_energy_sanitized_diagnostic.json"))
-        content = json.dumps(report, indent=2, sort_keys=True) + "\n"
-        await self.hass.async_add_executor_job(target.write_text, content, "utf-8")
 
     async def _async_update_cost_statistics(
         self,

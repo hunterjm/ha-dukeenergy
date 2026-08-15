@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from aiodukeenergy import DukeEnergy
 from homeassistant.const import Platform
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
@@ -12,7 +13,6 @@ from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 from .api import DukeEnergyAuth
 from .const import DOMAIN
 from .coordinator import DukeEnergyConfigEntry, DukeEnergyCoordinator
-from .diagnostic import SanitizedDiagnosticDukeEnergy
 from .oauth import DukeEnergyOAuth2Implementation
 
 if TYPE_CHECKING:
@@ -50,7 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DukeEnergyConfigEntry) -
         raise ConfigEntryAuthFailed from err
 
     auth = DukeEnergyAuth(aiohttp_client.async_get_clientsession(hass), session)
-    client = SanitizedDiagnosticDukeEnergy(auth)
+    client = DukeEnergy(auth)
 
     coordinator = DukeEnergyCoordinator(hass, client, entry)
     await coordinator.async_initialize_costs()
