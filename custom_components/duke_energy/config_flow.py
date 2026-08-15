@@ -18,6 +18,7 @@ from aiodukeenergy import (
 from homeassistant import config_entries
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
+    SOURCE_RECONFIGURE,
     ConfigEntry,
     ConfigFlowResult,
     OptionsFlowWithReload,
@@ -81,6 +82,12 @@ class DukeEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(self, _: Mapping[str, Any]) -> ConfigFlowResult:
         """Perform reauth upon an API authentication error."""
         return await self.async_step_reauth_confirm()
+
+    async def async_step_reconfigure(
+        self, _user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Allow the user to replace the stored Duke Energy credentials."""
+        return await self.async_step_user()
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
@@ -146,6 +153,12 @@ class DukeEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_mismatch(reason="wrong_account")
             return self.async_update_reload_and_abort(
                 self._get_reauth_entry(),
+                data_updates=data,
+            )
+        if self.source == SOURCE_RECONFIGURE:
+            self._abort_if_unique_id_mismatch(reason="wrong_account")
+            return self.async_update_reload_and_abort(
+                self._get_reconfigure_entry(),
                 data_updates=data,
             )
         self._abort_if_unique_id_configured()

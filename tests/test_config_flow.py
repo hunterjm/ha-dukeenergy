@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiodukeenergy import AuthorizationResult, AuthorizationTransaction
-from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
+from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_RECONFIGURE, SOURCE_USER
 from homeassistant.data_entry_flow import AbortFlow
 
 from custom_components.duke_energy.config_flow import DukeEnergyConfigFlow
@@ -135,6 +135,51 @@ async def test_reauth_identity_mismatch() -> None:
         pytest.raises(AbortFlow, match="wrong_account"),
     ):
         await flow.async_step_callback_url({"callback_url": CALLBACK_URL})
+
+
+async def test_reconfigure_updates_credentials() -> None:
+    """A user-initiated reconfigure replaces credentials and reloads the entry."""
+    flow = make_flow(SOURCE_RECONFIGURE)
+    flow._auth_transaction = TRANSACTION
+    authorization = AuthorizationResult(
+        token=TOKEN,
+        id_token_claims={
+            "internal_identifier": "DUKE_USER",
+            "email": "user@example.com",
+        },
+    )
+    expected = {"type": "abort", "reason": "reconfigure_successful"}
+    entry = MagicMock()
+    with (
+        patch(
+            "custom_components.duke_energy.config_flow."
+            "aiohttp_client.async_get_clientsession"
+        ),
+        patch(
+            "custom_components.duke_energy.config_flow.Auth0Client."
+            "complete_authorization",
+            AsyncMock(return_value=authorization),
+        ),
+        patch(
+            "custom_components.duke_energy.config_flow."
+            "DukeEnergyOAuth2Implementation.adjust_token_expiry",
+            return_value=TOKEN,
+        ),
+        patch.object(flow, "async_set_unique_id", AsyncMock()),
+        patch.object(flow, "_abort_if_unique_id_mismatch") as identity_check,
+        patch.object(flow, "_get_reconfigure_entry", return_value=entry),
+        patch.object(
+            flow, "async_update_reload_and_abort", return_value=expected
+        ) as update,
+    ):
+        result = await flow.async_step_callback_url({"callback_url": CALLBACK_URL})
+
+    assert result == expected
+    identity_check.assert_called_once_with(reason="wrong_account")
+    update.assert_called_once_with(
+        entry,
+        data_updates={"auth_implementation": DOMAIN, "token": TOKEN},
+    )
 
 
 async def test_interrupted_flow_requires_restart() -> None:
