@@ -1,13 +1,25 @@
 {
   "config": {
     "step": {
-      "pick_implementation": {
-        "title": "[%key:common::config_flow::title::oauth2_pick_implementation%]"
+      "auth": {
+        "title": "Authorize with Duke Energy",
+        "description": "1. [Sign in to Duke Energy]({authorize_url}) in a **desktop browser**.\n2. After signing in, your browser will land on a blank or \"Not Found\" page. This is expected.\n3. Copy the **entire address** out of the browser's address bar and paste it below.",
+        "data": {
+          "callback_url": "Callback URL"
+        },
+        "data_description": {
+          "callback_url": "The full address you were redirected to, including everything after the '?'."
+        }
       },
       "reauth_confirm": {
         "title": "[%key:common::config_flow::title::reauth%]",
         "description": "The Duke Energy integration needs to re-authenticate your account"
       }
+    },
+    "error": {
+      "invalid_callback_url": "The input does not match the Duke Energy callback address. Copy the entire URL out of the address bar after signing in, including everything after the '?'.",
+      "state_mismatch": "That URL is from a different sign-in attempt. Open the sign-in link above again and paste the new address.",
+      "authorize_rejected": "Duke Energy rejected the sign-in. Open the sign-in link above and try again."
     },
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_account%]",
