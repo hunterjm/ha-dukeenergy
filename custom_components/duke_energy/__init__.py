@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiodukeenergy import DukeEnergy
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 
 from .api import DukeEnergyAuth
-from .const import DOMAIN
+from .const import (
+    CONF_COST_MODE,
+    CONF_FIXED_PRICE,
+    CONF_METERS,
+    CONF_MONTHLY_CHARGE,
+    CONF_PRICE_ENTITY,
+    DOMAIN,
+)
 from .coordinator import DukeEnergyConfigEntry, DukeEnergyCoordinator
 from .oauth import DukeEnergyOAuth2Implementation
 
@@ -53,7 +60,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: DukeEnergyConfigEntry) -
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
 
+    _migrate_flat_options(hass, entry, coordinator.meters)
+
+    entry.async_on_unload(entry.add_update_listener(async_update_options))
+
     return True
+
+
+def _migrate_flat_options(
+    hass: HomeAssistant,
+    entry: DukeEnergyConfigEntry,
+    meters: dict[str, dict[str, Any]],
+) -> None:
+    """Migrate pre-per-meter flat cost options onto every meter."""
+    options = entry.options
+    if CONF_METERS in options or CONF_COST_MODE not in options or not meters:
+        return
+    flat = {
+        key: options[key]
+        for key in (
+            CONF_COST_MODE,
+            CONF_FIXED_PRICE,
+            CONF_PRICE_ENTITY,
+            CONF_MONTHLY_CHARGE,
+        )
+        if key in options
+    }
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_METERS: {serial: dict(flat) for serial in meters}}
+    )
+
+
+async def async_update_options(
+    _hass: HomeAssistant, entry: DukeEnergyConfigEntry
+) -> None:
+    """
+    Recompute cost statistics locally when options change.
+
+    Cost is derived from the stored consumption statistic, so a price change is a
+    local recompute -- no entry reload, no Duke API calls, and consumption
+    history is left untouched.
+    """
+    await entry.runtime_data.async_rebuild_costs()
 
 
 async def async_migrate_entry(
