@@ -1,5 +1,6 @@
 """Coordinator to handle Duke Energy connections."""
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -32,6 +33,10 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 _SUPPORTED_METER_TYPES = ("ELECTRIC",)
+
+# Duke's edge blocks clients that don't look like the mobile app, so keep
+# request bursts small.
+_MAX_CONCURRENT_REQUESTS = 3
 
 type DukeEnergyConfigEntry = ConfigEntry[DukeEnergyCoordinator]
 
@@ -205,35 +210,55 @@ class DukeEnergyCoordinator(DataUpdateCoordinator[None]):
         end = dt_util.now(tz).replace(hour=0, minute=0, second=0, microsecond=0) - one
         _LOGGER.debug("Data lookup range: %s - %s", start, end)
 
+        # Ranges are ordered newest first
+        ranges: list[tuple[datetime, datetime]] = []
         start_step = max(end - lookback, start)
         end_step = end
-        usage: dict[datetime, dict[str, float | int]] = {}
         while True:
-            _LOGGER.debug("Getting hourly usage: %s - %s", start_step, end_step)
-            try:
-                # Get data
+            ranges.append((start_step, end_step))
+
+            # Set next range
+            end_step = start_step - one
+            start_step = max(start_step - lookback, start)
+
+            # Make sure we don't go back too far
+            if end_step < start:
+                break
+
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REQUESTS)
+
+        async def _get_range(
+            start_step: datetime, end_step: datetime
+        ) -> dict[datetime, dict[str, float | int]] | None:
+            async with semaphore:
+                _LOGGER.debug("Getting hourly usage: %s - %s", start_step, end_step)
                 try:
                     results = await self.api.get_energy_usage(
                         meter["serialNum"], "HOURLY", "DAY", start_step, end_step
                     )
                 except DukeEnergyAuthError as err:
                     raise ConfigEntryAuthFailed from err
+                except (TimeoutError, ClientError):
+                    # ClientError is raised when there is no more data for the range
+                    return None
 
-                usage = {**results["data"], **usage}
+            for missing in results["missing"]:
+                _LOGGER.debug("Missing data: %s", missing)
 
-                for missing in results["missing"]:
-                    _LOGGER.debug("Missing data: %s", missing)
+            return results["data"]
 
-                # Set next range
-                end_step = start_step - one
-                start_step = max(start_step - lookback, start)
+        results = await asyncio.gather(
+            *(_get_range(*r) for r in ranges), return_exceptions=True
+        )
 
-                # Make sure we don't go back too far
-                if end_step < start:
-                    break
-            except (TimeoutError, ClientError):
-                # ClientError is raised when there is no more data for the range
+        usage: dict[datetime, dict[str, float | int]] = {}
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+            # Older ranges past the first one without data are dropped
+            if result is None:
                 break
+            usage = {**result, **usage}
 
         _LOGGER.debug("Got %s meter usage reads", len(usage))
         return usage
